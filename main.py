@@ -19,6 +19,8 @@ app = Client(
     bot_token=BOT_TOKEN
 )
 
+user_status = {}
+
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client: Client, message: Message):
     await message.reply_text(
@@ -28,22 +30,42 @@ async def start_handler(client: Client, message: Message):
         "а я буду нагадувати про ДЗ та дедлайни!"
     )
 
+@app.on_message(filters.command("add") & filters.private)
+async def add_handler(client: Client, message: Message):
+    await message.reply_text('Чекаю на твій розклад у вигляді фото або тексту!')
+    user_status[message.from_user.id] = "waiting_for_schedule"
+
 @app.on_message(filters.text & filters.private)
 async def echo_handler(client: Client, message: Message):
-        await message.reply_text(f"Ти скинув повідомлення!")
+    if user_status.get(message.from_user.id) != "waiting_for_schedule":
+        await message.reply('Ти далбайоб адд напиши')
+        return
+    await message.reply_text(f"Ти скинув повідомлення!")
+    result = await parse_schedule(message.text, is_image=False)
+    if result:
+        status_msg = await message.reply_text('Бот розпізнв ваш розклад! Записую його в базу данних.')
+        save_lessons(result, message.from_user.id)
+        await status_msg.edit_text("Бот успішно записав ваш розклад в базу данних!")
+    elif result is None:
+        await message.reply_text('Бот не розпізнав ваш розклад!')
+    user_status[message.from_user.id] = "None"
+
 
 @app.on_message(filters.photo & filters.private)
 async def echo_handler(client: Client, message: Message):
+    if user_status.get(message.from_user.id) != "waiting_for_schedule":
+        await message.reply('Ти далбайоб адд напиши')
+        return
     await message.reply(f"Ти скинув фото!")
     file_path = await message.download()
-    result = await parse_schedule(file_path)
+    result = await parse_schedule(file_path, is_image=True)
     if result:
         status_msg = await message.reply_text('Бот розпізнав ваш розклад! Записую його в базу данних.')
-        save_lessons(result)
-        print('Дані в бд є')
+        save_lessons(result, message.from_user.id)
         await status_msg.edit_text('Бот успішно записав ваш розклад в базу данних!')
     elif result is None:
         await message.reply_text('Бот не розпізнав ваш розклад!')
+    user_status[message.from_user.id] = "None"
 
 
 if __name__ == "__main__":

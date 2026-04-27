@@ -8,13 +8,14 @@ def init_db():
     cursor.execute('''  
         CREATE TABLE IF NOT EXISTS lessons
         (
-            id
+            id_lesson
             INTEGER
             NOT
             NULL
             PRIMARY
             KEY
             AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
             day
             TEXT,
             subject_name
@@ -32,17 +33,16 @@ def init_db():
     conn.commit()
     conn.close()
 
-def save_lessons(data):
+def save_lessons(data,user_id):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM lessons")
+    cursor.execute("DELETE FROM lessons where user_id = ?", (user_id,))
     for day_item in data['schedule']:
         day_name = day_item['day']
-        print(day_name)
         for sub in day_item['subjects']:
             cursor.execute('''
-            INSERT INTO lessons (day, subject_name, start_time, type, teacher, audience)
-                           VALUES (?, ?, ?, ?, ?, ?)''', (
+            INSERT INTO lessons (user_id, day, subject_name, start_time, type, teacher, audience)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)''', ( user_id,
                 day_name,
                 sub['name'],
                 sub['time'],
