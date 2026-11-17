@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Локальні дані бота
+database.db
+*.session
+*.session-journal
