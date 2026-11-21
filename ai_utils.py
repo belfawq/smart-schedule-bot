@@ -5,6 +5,7 @@ from typing import Optional
 from dotenv import load_dotenv
 
 import clock
+from parser import normalize_audience, normalize_subgroup, normalize_type
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
@@ -116,5 +117,10 @@ def fill_missing_dates(data, today: date):
                 continue
             delta = (DAY_NAMES.index(name) - today.weekday()) % 7
             day["date"] = (today + timedelta(days=delta)).isoformat()
+        # Приводимо поля до того ж вигляду, що й дані з АСУ «ВНЗ»
+        for sub in day.get("subjects", []):
+            sub["type"] = normalize_type(sub.get("type") or "")
+            sub["audience"] = normalize_audience(sub.get("audience") or "")
+            sub["subgroup"] = normalize_subgroup(sub["subgroup"]) if sub.get("subgroup") else None
         result.append(day)
     return {"schedule": result} if result else None

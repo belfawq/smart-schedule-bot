@@ -25,7 +25,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 import clock
 import database as db
-from access import is_chat_admin
+from access import is_chat_admin, is_group_admin
 
 router = Router()
 
@@ -500,6 +500,19 @@ def short(text: str, limit: int = 60) -> str:
     return first if len(first) <= limit else first[:limit - 1].rstrip() + "…"
 
 
+def delete_button(hw_id: int):
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🗑 Видалити", callback_data=f"hw_del:{hw_id}")
+    return kb.as_markup()
+
+
+async def can_delete(bot: Bot, hw, user_id: int) -> bool:
+    """Особисте завдання видаляє лише власник, групове — адміністратор чату групи."""
+    if hw["owner_user_id"] is not None:
+        return hw["owner_user_id"] == user_id
+    return await is_group_admin(bot, hw["group_id"], user_id)
+
+
 @router.callback_query(F.data.startswith("hw_show:"))
 async def hw_show(cb: CallbackQuery, bot: Bot):
     hw = db.get_homework_by_id(int(cb.data.split(":")[1]))
@@ -520,4 +533,66 @@ async def hw_show(cb: CallbackQuery, bot: Bot):
 
     await cb.answer()
     header = "👤 Особисте завдання" if hw["owner_user_id"] else ""
-    await send_homework(bot, cb.message.chat.id, hw, header=header)
+    # В особистих кнопку видалення бачить лише той, хто має право видаляти.
+    # У чаті групи кнопка є завжди, а права перевіряються під час натискання
+    show_delete = (cb.message.chat.type != ChatType.PRIVATE or
+                   await can_delete(bot, hw, cb.from_user.id))
+    await send_homework(bot, cb.message.chat.id, hw, header=header,
+                        reply_markup=delete_button(hw["id"]) if show_delete else None)
+
+
+# ---------- Видалення ----------
+
+async def check_delete(cb: CallbackQuery, bot: Bot):
+    """Повертає завдання, якщо його можна видалити, інакше показує причину і повертає None."""
+    hw = db.get_homework_by_id(int(cb.data.split(":")[1]))
+    if hw is None or hw["status"] != "active":
+        await cb.message.edit_reply_markup(reply_markup=None)
+        await cb.answer("Цього завдання вже немає", show_alert=True)
+        return None
+    if not await can_delete(bot, hw, cb.from_user.id):
+        text = ("Особисте завдання може видалити лише його власник" if hw["owner_user_id"]
+                else "Видаляти групові завдання можуть лише адміністратори чату групи")
+        await cb.answer(text, show_alert=True)
+        return None
+    return hw
+
+
+@router.callback_query(F.data.startswith("hw_del:"))
+async def hw_delete_ask(cb: CallbackQuery, bot: Bot):
+    hw = await check_delete(cb, bot)
+    if hw is None:
+        return
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Так, видалити", callback_data=f"hw_delok:{hw['id']}")
+    kb.button(text="↩️ Ні", callback_data=f"hw_delno:{hw['id']}")
+    await cb.message.edit_reply_markup(reply_markup=kb.as_markup())
+    await cb.answer("Точно видалити це завдання?")
+
+
+@router.callback_query(F.data.startswith("hw_delno:"))
+async def hw_delete_cancel(cb: CallbackQuery):
+    await cb.message.edit_reply_markup(reply_markup=delete_button(int(cb.data.split(":")[1])))
+    await cb.answer("Скасовано")
+
+
+@router.callback_query(F.data.startswith("hw_delok:"))
+async def hw_delete_confirm(cb: CallbackQuery, bot: Bot):
+    hw = await check_delete(cb, bot)
+    if hw is None:
+        return
+    db.delete_homework(hw["id"])
+    await cb.message.edit_text(f"{cb.message.html_text}\n\n🗑 <b>Видалено</b> — {user_link(cb.from_user)}",
+                               parse_mode="HTML", reply_markup=None)
+    await cb.answer("Завдання видалено")
+
+    # Якщо групове завдання видалили в особистих, повідомляємо чат групи
+    if hw["owner_user_id"] is None and cb.message.chat.type == ChatType.PRIVATE:
+        due = date.fromisoformat(hw["due_date"]).strftime("%d.%m")
+        for chat_id in db.get_group_chats(hw["group_id"]):
+            try:
+                await bot.send_message(
+                    chat_id, f"🗑 {user_link(cb.from_user)} видалив(ла) домашнє завдання: "
+                             f"<b>{esc(hw['subject'])}</b> — до {due}", parse_mode="HTML")
+            except Exception as e:
+                logging.warning("Не вдалося повідомити чат %s: %s", chat_id, e)

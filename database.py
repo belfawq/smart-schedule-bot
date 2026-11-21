@@ -393,3 +393,9 @@ def get_personal_homework_on(due_date: date):
             WHERE owner_user_id IS NOT NULL AND status = 'active' AND due_date = ?
             ORDER BY owner_user_id, subject
         """, (str(due_date),)).fetchall()
+
+
+def delete_homework(hw_id) -> bool:
+    """Видаляє завдання разом із вкладеннями (ON DELETE CASCADE). Повертає, чи було що видаляти."""
+    with get_connection() as conn:
+        return conn.execute("DELETE FROM homework WHERE id = ?", (hw_id,)).rowcount > 0

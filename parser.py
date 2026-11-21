@@ -48,12 +48,23 @@ def normalize_subgroup(raw: str) -> str:
 
 
 def normalize_audience(raw: str):
-    """«ауд. №29, Корпус №4» -> «ауд. 29, корп. 4»; інші значення («онлайн») без змін."""
+    """
+    Приводить аудиторію до вигляду «ауд. 29, корп. 4».
+    Розпізнає «ауд. №29, Корпус №4», «ауд. 29 корп. 4», «29 корп. 4», «29»;
+    значення без номера («онлайн», «спортзал») залишає без змін.
+    """
     raw = raw.strip()
     if not raw:
         return None
-    aud = re.search(r"ауд\.?\s*№?\s*([^,\s]+)", raw, re.IGNORECASE)
-    building = re.search(r"корпус\s*№?\s*([^,\s]+)", raw, re.IGNORECASE)
+    aud = re.search(r"ауд(?:иторія)?\.?\s*№?\s*([^,\s]+)", raw, re.IGNORECASE)
+    building = re.search(r"корп(?:ус)?\.?\s*№?\s*([^,\s]+)", raw, re.IGNORECASE)
+    if aud is None:
+        # номер без слова «ауд.»: «29 корп. 4» або просто «29».
+        # Інші записи з номером («43 (ЦК)») залишаємо як є, щоб не втратити пояснення
+        number = re.match(r"№?\s*(\d+[\w/-]*)\s*,?\s*(.*)$", raw)
+        rest = number.group(2) if number else ""
+        if number and (not rest or (building and rest.lower().startswith("корп"))):
+            aud = number
     if not aud:
         return raw
     return f"ауд. {aud.group(1)}" + (f", корп. {building.group(1)}" if building else "")

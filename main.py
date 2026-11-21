@@ -8,7 +8,7 @@ from aiogram.enums import ChatType
 from aiogram.filters import Command, CommandObject, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import (BotCommand, BotCommandScopeAllGroupChats,
+from aiogram.types import (BotCommand, CallbackQuery, BotCommandScopeAllGroupChats,
                            BotCommandScopeAllPrivateChats, Message)
 from dotenv import load_dotenv
 
@@ -19,8 +19,9 @@ from database import (bind_chat, create_group, get_chat_group, get_group, get_gr
                       set_site_group_id)
 from access import is_chat_admin, is_chat_member, is_group_admin
 from clock import today
-from formatting import (format_day_title, format_lessons, format_week, split_message,
-                        week_bounds)
+from formatting import (format_day_title, format_lessons, format_schedule_preview, format_week,
+                        split_message, week_bounds)
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from parser import ScheduleSourceError
 from schedule_sync import sync_group
 import homework
@@ -43,7 +44,8 @@ common_router = Router()
 
 # Скінченний автомат станів (FSM): бот чекає на розклад після команди /add
 class UploadSchedule(StatesGroup):
-    waiting = State()
+    waiting = State()   # чекаємо фото або текст розкладу
+    confirm = State()   # розклад розпізнано, чекаємо підтвердження
 
 
 # Буфер для альбомів: Telegram надсилає кожне фото альбому окремим повідомленням
@@ -136,7 +138,11 @@ async def add_handler(message: Message, state: FSMContext, bot: Bot):
 
 
 async def process_schedule(message: Message, state: FSMContext, data, is_image: bool):
-    """Спільна логіка для тексту та фото: розпізнати розклад і зберегти для групи."""
+    """
+    Спільна логіка для тексту та фото: розпізнати розклад і показати його на перевірку.
+    Модель може помилитися (нечітке фото, незвичний формат), тому розклад
+    зберігається лише після підтвердження користувачем.
+    """
     group_id = get_user_group(message.from_user.id)
     status_msg = await message.answer("Розпізнаю розклад... ⏳")
     try:
@@ -145,13 +151,68 @@ async def process_schedule(message: Message, state: FSMContext, data, is_image: 
         logging.exception("Помилка розпізнавання: %s", e)
         result = None
 
-    if result:
-        dates = save_lessons(result, group_id, source="ai")
-        days_list = "\n".join(format_day_title(date.fromisoformat(d)) for d in dates)
-        await status_msg.edit_text(f"Розклад збережено для твоєї групи ✅\n\n{days_list}")
-    else:
+    if not result:
         await status_msg.edit_text("Не вдалося розпізнати розклад 😔 Спробуй інше фото або текст.")
+        await state.clear()
+        return
+
+    preview = format_schedule_preview(result)
+    # Попередження, якщо для цих дат у базі вже є розклад (наприклад, з АСУ «ВНЗ»)
+    replaced = [d["date"] for d in result["schedule"]
+                if get_lessons(group_id, date.fromisoformat(d["date"]))]
+    if replaced:
+        days = ", ".join(date.fromisoformat(d).strftime("%d.%m") for d in replaced)
+        preview += f"\n\n⚠️ Розклад на {days} уже є в базі — його буде замінено."
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Зберегти", callback_data="sched_save")
+    kb.button(text="❌ Скасувати", callback_data="sched_cancel")
+    await state.set_state(UploadSchedule.confirm)
+    await state.update_data(pending=result)
+
+    parts = split_message(preview)
+    await status_msg.edit_text(parts[0], parse_mode="HTML",
+                               reply_markup=kb.as_markup() if len(parts) == 1 else None)
+    for i, part in enumerate(parts[1:], start=2):
+        await message.answer(part, parse_mode="HTML",
+                             reply_markup=kb.as_markup() if i == len(parts) else None)
+
+
+@private_router.callback_query(UploadSchedule.confirm, F.data == "sched_save")
+async def schedule_save(cb: CallbackQuery, state: FSMContext, bot: Bot):
+    data = (await state.get_data()).get("pending")
+    group_id = get_user_group(cb.from_user.id)
+    if not data or group_id is None:
+        await state.clear()
+        return await cb.answer("Дані втрачено. Надішли розклад знову: /add", show_alert=True)
+    if not await is_group_admin(bot, group_id, cb.from_user.id):
+        await state.clear()
+        return await cb.answer("Зберігати розклад можуть лише адміністратори чату групи",
+                               show_alert=True)
+    dates = save_lessons(data, group_id, source="ai")
     await state.clear()
+    days_list = "\n".join(format_day_title(date.fromisoformat(d)) for d in dates)
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.message.answer(f"✅ Розклад збережено для групи:\n\n{days_list}\n\nПереглянути: /week")
+    await cb.answer()
+
+
+@private_router.callback_query(F.data.in_({"sched_save", "sched_cancel"}))
+async def schedule_cancel(cb: CallbackQuery, state: FSMContext):
+    # Скасування, а також натискання кнопок старого попереднього перегляду
+    if cb.data == "sched_save":
+        await cb.message.edit_reply_markup(reply_markup=None)
+        return await cb.answer("Цей розклад уже неактуальний. Надішли його знову: /add",
+                               show_alert=True)
+    await state.clear()
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.message.answer("Скасовано, розклад не змінено. Спробувати ще раз: /add")
+    await cb.answer()
+
+
+@private_router.message(UploadSchedule.confirm, F.photo | (F.text & ~F.text.startswith("/")))
+async def schedule_waiting_confirm(message: Message):
+    await message.answer("Спершу збережи або скасуй розпізнаний розклад кнопками вище 👆")
 
 
 @private_router.message(UploadSchedule.waiting, F.photo)

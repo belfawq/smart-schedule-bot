@@ -24,11 +24,13 @@ def format_audience(audience):
 
 def lesson_details(l, with_teacher: bool) -> str:
     """Рядок деталей заняття: тип · підгрупа · аудиторія [· викладач]."""
+    # l — рядок таблиці lessons або словник заняття з розпізнаного розкладу
+    get = (lambda k: l[k] if k in l.keys() else None)
     parts = [
-        LESSON_TYPES_UA.get(l["type"], l["type"]) if l["type"] else None,
-        f"{l['subgroup']} підгрупа" if l["subgroup"] else None,
-        format_audience(l["audience"]),
-        l["teacher"] if with_teacher else None,
+        LESSON_TYPES_UA.get(get("type"), get("type")) if get("type") else None,
+        f"{get('subgroup')} підгрупа" if get("subgroup") else None,
+        format_audience(get("audience")),
+        get("teacher") if with_teacher else None,
     ]
     return escape(" · ".join(p for p in parts if p))
 
@@ -97,3 +99,20 @@ def split_message(text: str, limit: int = 4000) -> list[str]:
             current = candidate
     parts.append(current)
     return parts
+
+
+def format_schedule_preview(data: dict) -> str:
+    """Попередній перегляд розпізнаного розкладу перед збереженням."""
+    lines = ["🔍 <b>Ось що я розпізнав.</b> Перевір, будь ласка:"]
+    for day in data["schedule"]:
+        d = date.fromisoformat(day["date"])
+        lines.append(f"\n📌 <b>{format_day_title(d)}</b>")
+        if not day["subjects"]:
+            lines.append("Пар немає")
+        for sub in sorted(day["subjects"], key=lambda x: x.get("time") or ""):
+            time = (sub.get("time") or "??:??") + (f"–{sub['end_time']}" if sub.get("end_time") else "")
+            lines.append(f"<code>{time}</code> {escape(sub.get('name') or '?')}")
+            details = lesson_details(sub, with_teacher=True)
+            if details:
+                lines.append(f"└ <i>{details}</i>")
+    return "\n".join(lines)
