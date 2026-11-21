@@ -23,6 +23,7 @@ from aiogram.types import (CallbackQuery, InputMediaDocument, InputMediaPhoto,
                            InputMediaVideo, Message, User)
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+import clock
 import database as db
 from access import is_chat_admin
 
@@ -162,7 +163,7 @@ async def hw_scope(cb: CallbackQuery, state: FSMContext):
         return await lost_draft(cb, state)
     draft["scope"] = cb.data.split(":")[1]
 
-    today = date.today()
+    today = clock.today()
     subjects = db.get_group_subjects(draft["group_id"], today - timedelta(days=14),
                                      today + timedelta(days=30))
     draft["subjects"] = subjects
@@ -264,7 +265,7 @@ async def hw_done(cb: CallbackQuery, state: FSMContext):
     if not draft["text"] and not draft["attachments"]:
         return await cb.answer("Спершу надішли текст або файл із завданням", show_alert=True)
 
-    next_date = db.get_next_lesson_date(draft["group_id"], draft["subject"], date.today())
+    next_date = db.get_next_lesson_date(draft["group_id"], draft["subject"], clock.today())
     kb = InlineKeyboardBuilder()
     if next_date:
         draft["next_date"] = next_date
@@ -309,7 +310,7 @@ def parse_date(text: str, today: date):
 
 @router.message(HomeworkForm.custom_date, F.text & ~F.text.startswith("/"))
 async def hw_custom_date(message: Message, state: FSMContext, bot: Bot):
-    today = date.today()
+    today = clock.today()
     due = parse_date(message.text, today)
     if due is None or due < today:
         return await message.answer("Не розумію дату 🤔 Введи у форматі ДД.ММ, наприклад 28.11")
@@ -466,7 +467,7 @@ def load_list_items(chat_type, chat_id: int, user_id: int):
     group_id, owner = list_context(chat_type, chat_id, user_id)
     if group_id is None:
         return None
-    today = date.today()
+    today = clock.today()
     return db.get_homework_range(group_id, today, today + timedelta(days=14), owner)
 
 

@@ -1,5 +1,4 @@
 import asyncio
-import html
 import logging
 import os
 from datetime import date, timedelta
@@ -9,18 +8,23 @@ from aiogram.enums import ChatType
 from aiogram.filters import Command, CommandObject, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import BotCommand, Message
+from aiogram.types import (BotCommand, BotCommandScopeAllGroupChats,
+                           BotCommandScopeAllPrivateChats, Message)
 from dotenv import load_dotenv
 
 from ai_utils import parse_schedule
 from database import (bind_chat, create_group, get_chat_group, get_group, get_group_by_code,
                       get_group_chats, get_lessons, get_lessons_range, get_user_group,
-                      init_db, join_group, replace_lessons_range, save_lessons,
+                      init_db, join_group, save_lessons,
                       set_site_group_id)
 from access import is_chat_admin, is_chat_member, is_group_admin
+from clock import today
+from formatting import (format_day_title, format_lessons, format_week, split_message,
+                        week_bounds)
 from parser import ScheduleSourceError
 from schedule_sync import sync_group
 import homework
+import notifier
 import site_link
 
 load_dotenv()
@@ -224,53 +228,6 @@ async def create_group_handler(message: Message, command: CommandObject, bot: Bo
 
 # ---------- Перегляд розкладу (особисті повідомлення і група) ----------
 
-def escape(text: str) -> str:
-    """Екранування для parse_mode=HTML (апостроф залишаємо як є)."""
-    return html.escape(text, quote=False)
-
-
-DAY_NAMES_UA = ["Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота", "Неділя"]
-LESSON_TYPES_UA = {"lecture": "Лекція", "practice": "Практика", "lab": "Лабораторна"}
-
-
-def format_day_title(d: date) -> str:
-    return f"{DAY_NAMES_UA[d.weekday()]}, {d.strftime('%d.%m')}"
-
-
-def format_audience(audience):
-    """«29» -> «ауд. 29»; «ауд. 29, корп. 4» і «онлайн» залишаються як є."""
-    if not audience:
-        return None
-    return f"ауд. {audience}" if audience[0].isdigit() else audience
-
-
-def lesson_details(l, with_teacher: bool) -> str:
-    """Рядок деталей заняття: тип · підгрупа · аудиторія [· викладач]."""
-    parts = [
-        LESSON_TYPES_UA.get(l["type"], l["type"]) if l["type"] else None,
-        f"{l['subgroup']} підгрупа" if l["subgroup"] else None,
-        format_audience(l["audience"]),
-        l["teacher"] if with_teacher else None,
-    ]
-    return escape(" · ".join(p for p in parts if p))
-
-
-def format_lesson(l, with_teacher: bool) -> str:
-    time = l["start_time"] + (f"–{l['end_time']}" if l["end_time"] else "")
-    text = f"🕐 <b>{time}</b>\n<b>{escape(l['subject'])}</b>"
-    details = lesson_details(l, with_teacher)
-    if details:
-        text += f"\n<i>{details}</i>"
-    return text
-
-
-def format_lessons(d: date, lessons) -> str:
-    title = f"📅 <b>{format_day_title(d)}</b>"
-    if not lessons:
-        return f"{title}\n\nПар немає 🎉"
-    return title + "\n\n" + "\n\n".join(format_lesson(l, with_teacher=True) for l in lessons)
-
-
 def resolve_group(message: Message):
     """В особистих — група користувача, у груповому чаті — група, прив'язана до чату."""
     if message.chat.type == ChatType.PRIVATE:
@@ -289,62 +246,12 @@ async def send_day_schedule(message: Message, d: date):
 
 @common_router.message(Command("today"))
 async def today_handler(message: Message):
-    await send_day_schedule(message, date.today())
+    await send_day_schedule(message, today())
 
 
 @common_router.message(Command("tomorrow"))
 async def tomorrow_handler(message: Message):
-    await send_day_schedule(message, date.today() + timedelta(days=1))
-
-
-def week_bounds(today: date) -> tuple[date, date]:
-    """
-    Понеділок і неділя тижня, який треба показати.
-    У будні — поточний тиждень, у суботу й неділю — наступний,
-    бо поточний навчальний тиждень уже завершився.
-    """
-    monday = today - timedelta(days=today.weekday())
-    if today.weekday() >= 5:  # 5 — субота, 6 — неділя
-        monday += timedelta(days=7)
-    return monday, monday + timedelta(days=6)
-
-
-def format_week(monday: date, sunday: date, lessons) -> str:
-    by_day = {}
-    for l in lessons:
-        by_day.setdefault(l["lesson_date"], []).append(l)
-
-    blocks = [f"🗓 <b>Розклад на тиждень {monday.strftime('%d.%m')}–{sunday.strftime('%d.%m')}</b>"]
-    for i in range(7):
-        d = monday + timedelta(days=i)
-        day_lessons = by_day.get(d.isoformat(), [])
-        if not day_lessons and d.weekday() >= 5:
-            continue  # вихідні без пар не показуємо
-        lines = [f"📌 <b>{format_day_title(d)}</b>"]
-        if not day_lessons:
-            lines.append("Пар немає 🎉")
-        for l in day_lessons:
-            lines.append(f"<code>{l['start_time']}</code> {escape(l['subject'])}")
-            details = lesson_details(l, with_teacher=False)
-            if details:
-                lines.append(f"└ <i>{details}</i>")
-        blocks.append("\n".join(lines))
-    blocks.append("<i>Подробиці з викладачами: /today, /tomorrow</i>")
-    return "\n\n".join(blocks)
-
-
-def split_message(text: str, limit: int = 4000) -> list[str]:
-    """Ділить довгий текст на частини за межами днів (ліміт Telegram — 4096 символів)."""
-    parts, current = [], ""
-    for block in text.split("\n\n"):
-        candidate = f"{current}\n\n{block}" if current else block
-        if len(candidate) > limit and current:
-            parts.append(current)
-            current = block
-        else:
-            current = candidate
-    parts.append(current)
-    return parts
+    await send_day_schedule(message, today() + timedelta(days=1))
 
 
 @common_router.message(Command("week"))
@@ -354,7 +261,7 @@ async def week_handler(message: Message):
         hint = "/group КН-21" if message.chat.type == ChatType.PRIVATE else "/create_group КН-21"
         await message.answer(f"Спершу вкажи групу: {hint}")
         return
-    monday, sunday = week_bounds(date.today())
+    monday, sunday = week_bounds(today())
     lessons = get_lessons_range(group_id, monday, sunday)
     if not lessons:
         await message.answer(
@@ -414,10 +321,10 @@ async def main():
 
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
-    dp.include_routers(homework.router, site_link.router, common_router, private_router,
-                       group_router)
+    dp.include_routers(homework.router, site_link.router, notifier.router, common_router,
+                       private_router, group_router)
 
-    # Меню команд, яке Telegram показує біля поля вводу
+    # Меню команд, яке Telegram показує біля поля вводу (окремо для ЛС і для груп)
     await bot.set_my_commands([
         BotCommand(command="today", description="Пари на сьогодні"),
         BotCommand(command="tomorrow", description="Пари на завтра"),
@@ -425,9 +332,28 @@ async def main():
         BotCommand(command="hw", description="Додати домашнє завдання"),
         BotCommand(command="hw_list", description="Домашні завдання на 2 тижні"),
         BotCommand(command="update", description="Оновити розклад з АСУ «ВНЗ»"),
-        BotCommand(command="group", description="Вказати свою групу"),
-        BotCommand(command="add", description="Завантажити розклад (староста)"),
-    ])
+        BotCommand(command="group", description="Приєднатися до групи"),
+        BotCommand(command="add", description="Завантажити розклад з фото (староста)"),
+    ], scope=BotCommandScopeAllPrivateChats())
+    await bot.set_my_commands([
+        BotCommand(command="today", description="Пари на сьогодні"),
+        BotCommand(command="tomorrow", description="Пари на завтра"),
+        BotCommand(command="week", description="Розклад на тиждень"),
+        BotCommand(command="hw_list", description="Домашні завдання на 2 тижні"),
+        BotCommand(command="hw", description="Додати домашнє завдання"),
+        BotCommand(command="notify", description="Налаштування розсилок"),
+        BotCommand(command="morning", description="Показати ранкову розсилку"),
+        BotCommand(command="evening", description="Показати вечірню розсилку"),
+        BotCommand(command="update", description="Оновити розклад з АСУ «ВНЗ»"),
+        BotCommand(command="create_group", description="Створити групу (адмін)"),
+        BotCommand(command="site", description="Прив'язати групу до АСУ «ВНЗ» (адмін)"),
+    ], scope=BotCommandScopeAllGroupChats())
+
+    # Розсилки та автоматичне оновлення розкладу за розкладом (київський час)
+    scheduler = notifier.setup_scheduler(bot)
+    scheduler.start()
+    for job in scheduler.get_jobs():
+        logging.info("Заплановано: %s — наступний запуск %s", job.id, job.next_run_time)
 
     print("--- БОТ ЗАПУЩЕНИЙ ---")
     await dp.start_polling(bot)

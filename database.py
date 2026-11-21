@@ -194,6 +194,17 @@ def get_chat_group(chat_id):
         return row["group_id"] if row else None
 
 
+def set_chat_notify(chat_id, enabled: bool):
+    with get_connection() as conn:
+        conn.execute("UPDATE group_chats SET notify = ? WHERE chat_id = ?", (int(enabled), chat_id))
+
+
+def get_chat_notify(chat_id) -> bool:
+    with get_connection() as conn:
+        row = conn.execute("SELECT notify FROM group_chats WHERE chat_id = ?", (chat_id,)).fetchone()
+        return bool(row and row["notify"])
+
+
 def get_chats_for_notify():
     with get_connection() as conn:
         return conn.execute("SELECT chat_id, group_id FROM group_chats WHERE notify = 1").fetchall()
@@ -372,3 +383,13 @@ def get_group_chats(group_id):
     with get_connection() as conn:
         return [r["chat_id"] for r in conn.execute(
             "SELECT chat_id FROM group_chats WHERE group_id = ?", (group_id,))]
+
+
+def get_personal_homework_on(due_date: date):
+    """Чинні особисті завдання всіх студентів на дату (для нагадувань у ЛС)."""
+    with get_connection() as conn:
+        return conn.execute("""
+            SELECT * FROM homework
+            WHERE owner_user_id IS NOT NULL AND status = 'active' AND due_date = ?
+            ORDER BY owner_user_id, subject
+        """, (str(due_date),)).fetchall()

@@ -3,6 +3,8 @@ from datetime import date, timedelta
 from typing import Optional
 
 from dotenv import load_dotenv
+
+import clock
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
@@ -68,7 +70,7 @@ async def parse_schedule(data, is_image: bool):
     data: текст розкладу (str) або список зображень у байтах (list[bytes]).
     Повертає словник {"schedule": [...]} або None, якщо розклад не знайдено.
     """
-    today = date.today()
+    today = clock.today()
     today_note = f"Сьогодні {today.isoformat()} ({DAY_NAMES[today.weekday()]})."
 
     if is_image:
