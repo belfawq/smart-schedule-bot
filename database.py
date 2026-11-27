@@ -1,13 +1,25 @@
 import sqlite3
+from contextlib import contextmanager
 from datetime import date
 
 DB_NAME = "database.db"
 
+
+@contextmanager
 def get_connection():
+    """
+    Відкриває з'єднання з базою для блоку with.
+    Наприкінці блоку зміни фіксуються (commit), у разі помилки — скасовуються
+    (rollback), а з'єднання обов'язково закривається.
+    """
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row          # доступ до полів за назвою: row["subject"]
     conn.execute("PRAGMA foreign_keys = ON")  # SQLite за замовчуванням не перевіряє зовнішні ключі
-    return conn
+    try:
+        with conn:                          # commit або rollback
+            yield conn
+    finally:
+        conn.close()
 
 
 def init_db():

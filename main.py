@@ -172,8 +172,11 @@ async def process_schedule(message: Message, state: FSMContext, data, is_image: 
         result = None
 
     if not result:
-        await status_msg.edit_text("Не вдалося розпізнати розклад 😔 Спробуй інше фото або текст.")
-        await state.clear()
+        # Залишаємо режим завантаження, щоб можна було одразу надіслати інше фото чи текст
+        await state.set_state(UploadSchedule.waiting)
+        await status_msg.edit_text("Не вдалося розпізнати розклад 😔\n"
+                                   "Надішли інше фото або текст розкладу.\n"
+                                   "Щоб скасувати, натисни будь-яку кнопку меню.")
         return
 
     preview = format_schedule_preview(result)

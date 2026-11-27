@@ -122,7 +122,9 @@ def cb(data, user=STUDENT, chat=None):
     return Update(update_id=_uid[0], callback_query={
         "id": str(_uid[0]), "from": {"id": user, "is_bot": False, "first_name": f"U{user}"},
         "chat_instance": "x", "data": data,
-        "message": {"message_id": 1, "date": 0, "text": "m",
+        # date має бути ненульовим: повідомлення з date = 0 aiogram вважає
+        # недоступним (InaccessibleMessage), і кнопки під ним не обробляються
+        "message": {"message_id": 1, "date": 1, "text": "m",
                     "chat": {"id": chat, "type": "private" if chat > 0 else "supergroup"}}})
 
 
