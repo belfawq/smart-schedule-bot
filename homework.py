@@ -288,6 +288,10 @@ async def hw_deadline(cb: CallbackQuery, state: FSMContext, bot: Bot):
         await state.set_state(HomeworkForm.custom_date)
         await cb.message.edit_text("Введи дату у форматі ДД.ММ (наприклад, 28.11):")
         return await cb.answer()
+    if not draft.get("next_date"):
+        # Стара кнопка: наступної пари з цього предмета вже немає в розкладі
+        return await cb.answer("Наступної пари з цього предмета немає в розкладі. Обери «🗓 Інша дата».",
+                               show_alert=True)
     await cb.message.edit_reply_markup(reply_markup=None)
     await cb.answer()
     await finish(bot, cb.message, cb.from_user, state, date.fromisoformat(draft["next_date"]))

@@ -221,3 +221,6 @@ __marimo__/
 database.db
 *.session
 *.session-journal
+
+tests/results/
+bot.log

@@ -9,6 +9,7 @@ from aiogram.filters import Command, CommandObject, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (BotCommand, CallbackQuery, BotCommandScopeAllGroupChats,
+                           KeyboardButton, ReplyKeyboardMarkup,
                            BotCommandScopeAllPrivateChats, Message)
 from dotenv import load_dotenv
 
@@ -66,6 +67,23 @@ HELP_TEXT = (
 )
 
 
+# Постійне меню під полем вводу в особистих повідомленнях
+BTN_TODAY, BTN_TOMORROW, BTN_WEEK = "📅 Сьогодні", "📅 Завтра", "🗓 Тиждень"
+BTN_HW_ADD, BTN_HW_LIST = "📝 Додати ДЗ", "📋 Список ДЗ"
+MENU_BUTTONS = {BTN_TODAY, BTN_TOMORROW, BTN_WEEK, BTN_HW_ADD, BTN_HW_LIST}
+MAIN_MENU = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text=BTN_TODAY), KeyboardButton(text=BTN_TOMORROW),
+               KeyboardButton(text=BTN_WEEK)],
+              [KeyboardButton(text=BTN_HW_ADD), KeyboardButton(text=BTN_HW_LIST)]],
+    resize_keyboard=True, is_persistent=True,
+    input_field_placeholder="Вибери дію в меню нижче",
+)
+
+# Роутер меню підключається першим: кнопка меню перериває будь-який незавершений діалог
+menu_router = Router()
+menu_router.message.filter(F.chat.type == ChatType.PRIVATE)
+
+
 async def try_join(message: Message, bot: Bot, group):
     """Додає користувача до групи, якщо він учасник чату цієї групи в Telegram."""
     chats = get_group_chats(group["id"])
@@ -73,7 +91,8 @@ async def try_join(message: Message, bot: Bot, group):
         if await is_chat_member(bot, chat_id, message.from_user.id):
             join_group(message.from_user.id, message.from_user.first_name,
                        message.from_user.username, group["id"])
-            await message.answer(f"Тебе додано до групи {group['code']} ✅\n\n{HELP_TEXT}")
+            await message.answer(f"Тебе додано до групи {group['code']} ✅\n\n{HELP_TEXT}",
+                                 reply_markup=MAIN_MENU)
             return
     await message.answer(
         f"Ти не учасник чату групи {group['code']} 🤔\n"
@@ -94,7 +113,8 @@ async def start_handler(message: Message, command: CommandObject, bot: Bot):
     group_id = get_user_group(message.from_user.id)
     if group_id is not None:
         await message.answer(f"Привіт, {message.from_user.first_name}! 👋\n"
-                             f"Твоя група: {get_group(group_id)['code']}\n\n{HELP_TEXT}")
+                             f"Твоя група: {get_group(group_id)['code']}\n\n{HELP_TEXT}",
+                             reply_markup=MAIN_MENU)
         return
     await message.answer(
         f"Привіт, {message.from_user.first_name}! 👋\n\n"
@@ -242,6 +262,7 @@ async def text_handler(message: Message, state: FSMContext):
 
 @private_router.message(StateFilter(None), F.photo | (F.text & ~F.text.startswith("/")))
 async def no_state_handler(message: Message):
+    """Повідомлення поза будь-яким діалогом: підказуємо, що вміє бот."""
     # Для альбому відповідаємо лише один раз
     if message.media_group_id:
         if message.media_group_id in album_buffer:
@@ -250,7 +271,42 @@ async def no_state_handler(message: Message):
         asyncio.get_running_loop().call_later(
             ALBUM_WAIT_SECONDS, album_buffer.pop, message.media_group_id, None
         )
-    await message.answer("Щоб завантажити розклад, спершу напиши /add")
+    if get_user_group(message.from_user.id) is None:
+        await message.answer("Спершу приєднайся до своєї групи: натисни кнопку під "
+                             "повідомленням бота в чаті групи або напиши /group КН-21")
+        return
+    if message.photo:
+        await message.answer(
+            "Що зробити з цим фото? 🤔\n\n"
+            f"• Додати домашнє завдання — натисни «{BTN_HW_ADD}» і надішли фото ще раз\n"
+            "• Завантажити розклад з фото (староста) — команда /add",
+            reply_markup=MAIN_MENU)
+        return
+    await message.answer(f"Не зрозумів 🤔 Скористайся кнопками меню або командами:\n\n{HELP_TEXT}",
+                         reply_markup=MAIN_MENU)
+
+
+# ---------- Меню ----------
+
+@menu_router.message(F.text.in_(MENU_BUTTONS))
+async def menu_handler(message: Message, state: FSMContext):
+    # Натискання кнопки меню скасовує незавершений діалог (завантаження розкладу, ДЗ)
+    if await state.get_state() is not None:
+        await state.clear()
+        homework.drafts.pop(message.from_user.id, None)
+    if get_user_group(message.from_user.id) is None:
+        await message.answer("Спершу приєднайся до своєї групи: /group КН-21")
+        return
+    if message.text == BTN_TODAY:
+        await send_day_schedule(message, today())
+    elif message.text == BTN_TOMORROW:
+        await send_day_schedule(message, today() + timedelta(days=1))
+    elif message.text == BTN_WEEK:
+        await week_handler(message)
+    elif message.text == BTN_HW_ADD:
+        await homework.hw_start(message, state)
+    elif message.text == BTN_HW_LIST:
+        await homework.hw_list(message)
 
 
 # ---------- Групові чати ----------
@@ -382,8 +438,8 @@ async def main():
 
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
-    dp.include_routers(homework.router, site_link.router, notifier.router, common_router,
-                       private_router, group_router)
+    dp.include_routers(menu_router, homework.router, site_link.router, notifier.router,
+                       common_router, private_router, group_router)
 
     # Меню команд, яке Telegram показує біля поля вводу (окремо для ЛС і для груп)
     await bot.set_my_commands([
