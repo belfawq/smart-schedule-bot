@@ -18,7 +18,8 @@ from database import (bind_chat, create_group, get_chat_group, get_group, get_gr
                       get_group_chats, get_lessons, get_lessons_range, get_user_group,
                       init_db, join_group, save_lessons,
                       set_site_group_id)
-from access import is_chat_admin, is_chat_member, is_group_admin
+import access
+from access import MembershipUnknown, is_chat_admin, is_chat_member, is_group_admin
 from clock import today
 from formatting import (format_day_title, format_lessons, format_schedule_preview, format_week,
                         split_message, week_bounds)
@@ -88,7 +89,13 @@ async def try_join(message: Message, bot: Bot, group):
     """Додає користувача до групи, якщо він учасник чату цієї групи в Telegram."""
     chats = get_group_chats(group["id"])
     for chat_id in chats:
-        if await is_chat_member(bot, chat_id, message.from_user.id):
+        try:
+            member = await is_chat_member(bot, chat_id, message.from_user.id)
+        except MembershipUnknown:
+            await message.answer("Не вдалося зв'язатися з Telegram, щоб перевірити членство "
+                                 "в чаті групи 😔 Спробуй ще раз за хвилину.")
+            return
+        if member:
             join_group(message.from_user.id, message.from_user.first_name,
                        message.from_user.username, group["id"])
             await message.answer(f"Тебе додано до групи {group['code']} ✅\n\n{HELP_TEXT}",
@@ -441,6 +448,8 @@ async def main():
 
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
+    # Перевірка, що користувач досі в чаті групи, і обробка виходу з чату
+    access.register(dp)
     dp.include_routers(menu_router, homework.router, site_link.router, notifier.router,
                        common_router, private_router, group_router)
 
