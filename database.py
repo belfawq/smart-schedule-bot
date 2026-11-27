@@ -166,6 +166,14 @@ def join_group(user_id, first_name, username, group_id):
         """, (user_id, first_name, username, group_id))
 
 
+def leave_group(user_id, group_id):
+    """Відв'язує користувача від групи (він більше не учасник чату групи).
+    Особисті завдання не видаляються: вони знову стануть доступні після повернення в чат."""
+    with get_connection() as conn:
+        conn.execute("UPDATE users SET group_id = NULL WHERE user_id = ? AND group_id = ?",
+                     (user_id, group_id))
+
+
 def set_site_group_id(group_id, site_group_id, site_group_name=None):
     """Зберігає ідентифікатор (aStudyGroupID) і назву групи в АСУ «ВНЗ»."""
     with get_connection() as conn:
@@ -295,7 +303,7 @@ def get_lessons_range(group_id, start: date, end: date):
 
 
 def get_next_lesson_date(group_id, subject, after_date: date):
-    """Дата наступної пари з предмета після вказаної дати (знадобиться для ДЗ)."""
+    """Дата наступної пари з предмета після вказаної дати (дедлайн ДЗ «на наступну пару»)."""
     with get_connection() as conn:
         row = conn.execute("""
             SELECT MIN(lesson_date) AS d FROM lessons

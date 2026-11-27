@@ -25,6 +25,7 @@ TMP_DB = RESULTS / "scenarios.db"
 TMP_DB.unlink(missing_ok=True)
 db.DB_NAME = str(TMP_DB)
 
+import access  # noqa: E402
 import clock  # noqa: E402
 import homework  # noqa: E402
 import main  # noqa: E402
@@ -130,6 +131,7 @@ def cb(data, user=STUDENT, chat=None):
 
 bot = Bot(token=os.environ["BOT_TOKEN"])
 dp = Dispatcher()
+access.register(dp)
 dp.include_routers(main.menu_router, homework.router, site_link.router, notifier.router,
                    main.common_router, main.private_router, main.group_router)
 
@@ -355,6 +357,34 @@ async def s21():
     await send(cb("hw_cancel"))
     out = await send(msg("а де дз?", user=STUDENT))
     assert "Не зрозумів" in texts(out)
+
+
+@scenario("Учасника видалили з чату групи: доступ і повернення",
+          "Доступ закрито, після повернення в чат — відкрито знову")
+async def s22():
+    gid = db.get_chat_group(CHAT)
+    MEMBERS.discard(STUDENT2)
+    access.forget_member(gid, STUDENT2)  # як після закінчення терміну кешу
+    try:
+        out = await send(msg("/today", user=STUDENT2))
+        assert "доступ до розкладу і завдань закрито" in texts(out)
+        assert db.get_user_group(STUDENT2) is None
+        out = await send(msg("/week", user=STUDENT2))  # повторно — як для нового користувача
+        assert "Спершу" in texts(out)
+        # Telegram повідомляє про видалення іншого учасника — доступ закривається одразу
+        MEMBERS.discard(STUDENT)
+        await send(Update(update_id=10_000, chat_member={
+            "chat": {"id": CHAT, "type": "supergroup"},
+            "from": {"id": ADMIN, "is_bot": False, "first_name": "A"}, "date": 1,
+            "old_chat_member": {"status": "member", "user": {"id": STUDENT, "is_bot": False,
+                                                             "first_name": "S"}},
+            "new_chat_member": {"status": "kicked", "until_date": 0,
+                                "user": {"id": STUDENT, "is_bot": False, "first_name": "S"}}}))
+        assert db.get_user_group(STUDENT) is None
+    finally:
+        MEMBERS.update({STUDENT, STUDENT2})
+    out = await send(msg("/group КН1-Б25", user=STUDENT2), msg(f"/start join_{gid}", user=STUDENT))
+    assert texts(out).count("Тебе додано") == 2 and db.get_user_group(STUDENT2) == gid
 
 
 async def run():
